@@ -55,6 +55,18 @@ def main():
     latents = torch.cat(latents_list, dim=0).to(device)  # (N, 4, T, 8, 8)
     print(f"Latent shape: {latents.shape}")
 
+    # Normalize latents to zero mean, unit variance
+    # This is critical: the diffusion noise schedule assumes unit-variance data.
+    # Without this, if latent values are very small, the noise overwhelms the signal.
+    latent_mean = latents.mean()
+    latent_std = latents.std()
+    print(f"Latent stats before normalization: mean={latent_mean:.6f}, std={latent_std:.6f}")
+    latents = (latents - latent_mean) / (latent_std + 1e-8)
+    print(f"Latent stats after normalization: mean={latents.mean():.6f}, std={latents.std():.6f}")
+
+    # Save normalization stats for use during sampling
+    torch.save({"mean": latent_mean.cpu(), "std": latent_std.cpu()}, "checkpoints/latent_stats.pt")
+
     # Create dataloader
     latent_dataset = TensorDataset(latents)
     dataloader = DataLoader(latent_dataset, batch_size=args.batch_size, shuffle=True)
@@ -108,8 +120,10 @@ def main():
             print("  Generating sample...")
             model.eval()
             with torch.no_grad():
-                # Sample latents from diffusion
+                # Sample latents from diffusion (in normalized space)
                 sample_latents = diffusion.sample(model, shape=(4, 4, 16, 8, 8))
+                # Denormalize back to original latent scale
+                sample_latents = sample_latents * latent_std + latent_mean
                 # Decode with VAE
                 sample_videos = vae.decode(sample_latents)
 
