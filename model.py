@@ -1,9 +1,9 @@
-"""DiT (Diffusion Transformer) for video generation in latent space.
+"""DiT (Diffusion Transformer) for video generation in pixel space.
 
-Operates on VAE latents of shape (B, 4, 16, 8, 8):
-  - Patchify 8x8 spatial into 2x2 patches -> 16 spatial tokens per frame
-  - 16 frames * 16 patches = 256 tokens total
-  - Each patch: 2*2*4 = 16 values, projected to hidden_dim
+Operates on pixel videos of shape (B, 3, 16, 32, 32):
+  - Patchify 32x32 spatial into 4x4 patches -> 8x8 = 64 spatial tokens per frame
+  - 16 frames * 64 patches = 1024 tokens total
+  - Each patch: 4*4*3 = 48 values, projected to hidden_dim
 
 Uses adaLN-Zero conditioning from timestep embedding.
 """
@@ -92,39 +92,39 @@ class DiTBlock(nn.Module):
 
 
 class DiT(nn.Module):
-    """Diffusion Transformer for latent video generation.
+    """Diffusion Transformer for pixel-space video generation.
 
-    Input: (B, latent_ch, T, H_latent, W_latent) + timestep
-    Output: (B, latent_ch, T, H_latent, W_latent) — predicted noise
+    Input: (B, in_channels, T, H, W) + timestep
+    Output: (B, in_channels, T, H, W) — predicted noise
     """
 
     def __init__(
         self,
-        latent_channels=4,
+        in_channels=3,
         num_frames=16,
-        latent_size=8,      # spatial size of VAE latent (8x8)
-        patch_size=2,
+        image_size=32,
+        patch_size=4,
         hidden_dim=384,
         num_heads=6,
         num_layers=6,
         mlp_ratio=4.0,
     ):
         super().__init__()
-        self.latent_channels = latent_channels
+        self.in_channels = in_channels
         self.num_frames = num_frames
-        self.latent_size = latent_size
+        self.image_size = image_size
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
 
         # Patch dimensions
-        self.num_spatial_patches = (latent_size // patch_size) ** 2  # 16
-        self.num_tokens = self.num_spatial_patches * num_frames       # 256
-        self.patch_dim = latent_channels * patch_size * patch_size    # 16
+        self.num_spatial_patches = (image_size // patch_size) ** 2     # 64
+        self.num_tokens = self.num_spatial_patches * num_frames         # 1024
+        self.patch_dim = in_channels * patch_size * patch_size          # 48
 
         # Patchify: linear projection from patch values to hidden dim
         self.patch_embed = nn.Linear(self.patch_dim, hidden_dim)
 
-        # Learned positional embeddings for all 256 tokens
+        # Learned positional embeddings for all 1024 tokens
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_tokens, hidden_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
@@ -155,14 +155,14 @@ class DiT(nn.Module):
         nn.init.zeros_(self.final_linear.bias)
 
     def patchify(self, x):
-        """Convert latent video to patch tokens.
+        """Convert pixel video to patch tokens.
 
         (B, C, T, H, W) -> (B, num_tokens, patch_dim)
         """
         B, C, T, H, W = x.shape
         p = self.patch_size
-        h_patches = H // p  # 4
-        w_patches = W // p  # 4
+        h_patches = H // p  # 8
+        w_patches = W // p  # 8
 
         # Reshape to extract patches
         # (B, C, T, h_patches, p, w_patches, p)
@@ -174,16 +174,16 @@ class DiT(nn.Module):
         return x
 
     def unpatchify(self, x):
-        """Convert patch tokens back to latent video.
+        """Convert patch tokens back to pixel video.
 
         (B, num_tokens, patch_dim) -> (B, C, T, H, W)
         """
         B = x.shape[0]
-        C = self.latent_channels
+        C = self.in_channels
         T = self.num_frames
         p = self.patch_size
-        h_patches = self.latent_size // p
-        w_patches = self.latent_size // p
+        h_patches = self.image_size // p
+        w_patches = self.image_size // p
 
         # (B, T, h_patches, w_patches, C, p, p)
         x = x.reshape(B, T, h_patches, w_patches, C, p, p)
@@ -195,13 +195,13 @@ class DiT(nn.Module):
 
     def forward(self, x, t):
         """
-        x: (B, C, T, H, W) — noisy latent video
+        x: (B, C, T, H, W) — noisy pixel video
         t: (B,) — diffusion timestep indices
         Returns: (B, C, T, H, W) — predicted noise
         """
         # Patchify and project
-        tokens = self.patchify(x)           # (B, 256, 16)
-        tokens = self.patch_embed(tokens)    # (B, 256, 384)
+        tokens = self.patchify(x)           # (B, 1024, 48)
+        tokens = self.patch_embed(tokens)    # (B, 1024, 384)
 
         # Add positional embeddings
         tokens = tokens + self.pos_embed
@@ -217,8 +217,8 @@ class DiT(nn.Module):
         mod = self.final_modulation(t_emb).unsqueeze(1)  # (B, 1, 2*D)
         scale, shift = mod.chunk(2, dim=-1)
         tokens = self.final_norm(tokens) * (1 + scale) + shift
-        tokens = self.final_linear(tokens)  # (B, 256, 16)
+        tokens = self.final_linear(tokens)  # (B, 1024, 48)
 
-        # Unpatchify back to latent video shape
+        # Unpatchify back to pixel video shape
         output = self.unpatchify(tokens)  # (B, C, T, H, W)
         return output
