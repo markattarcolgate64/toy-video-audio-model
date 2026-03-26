@@ -41,5 +41,5 @@ def save_image_grid(tensors, path, nrow=4):
 
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
     grid = make_grid(tensors, nrow=nrow, normalize=True, value_range=(-1, 1))
-    grid = grid.permute(1, 2, 0).mul(255).clamp(0, 255).to(torch.uint8).numpy()
+    grid = grid.cpu().permute(1, 2, 0).mul(255).clamp(0, 255).to(torch.uint8).numpy()
     Image.fromarray(grid).save(path)
